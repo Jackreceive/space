@@ -1,9 +1,7 @@
-# src/main_llm.py (单帧图片 + 智谱API 最终稳定版)
+# src/main_llm.py (视频输入最终版)
 import argparse
 import os
-from openai import OpenAI
-import base64
-import io
+from zhipuai import ZhipuAI # 导入智谱AI官方库
 from PIL import Image
 from tqdm import tqdm
 import re
@@ -12,56 +10,52 @@ import re
 from data_loader import load_video_data
 from detector import Detector
 from tracker import Tracker
-from utils import read_video_frames, save_results_to_json, read_single_frame
+from utils import read_video_frames, save_results_to_json
 
 class APIQueryRefiner:
     """
-    使用智谱AI，通过分析单帧图片，生成一个精确的、带有指代信息的英文短语。
+    使用智谱AI (GLM-4V) 的视频理解能力来生成精确的指代短语。
     """
     def __init__(self, api_key: str):
-        print("开始初始化智谱AI API (单帧图片模式)...")
+        print("开始初始化智谱AI API (视频模式)...")
         if not api_key:
             raise ValueError("错误: 未提供智谱AI API 密钥。")
         
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://open.bigmodel.cn/api/paas/v4/"
-        )
+        self.client = ZhipuAI(api_key=api_key)
         print("智谱AI API 初始化完成。")
 
-    def _encode_image_to_base64(self, frame: Image.Image) -> str:
-        """将 PIL Image 对象编码为 Base64 字符串"""
-        buffered = io.BytesIO()
-        frame.save(buffered, format="JPEG")
-        return base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-    def refine_query(self, frame: Image.Image, complex_query: str) -> str:
+    def refine_query(self, video_path: str, complex_query: str) -> str:
         """
-        发送一帧图像和复杂问题给智谱AI API，返回一个精确的英文指代短语。
+        上传视频并发送复杂问题给智谱AI API，返回一个精确的英文指代短语。
         """
-        base64_image = self._encode_image_to_base64(frame)
-        
-        phrase_prompt = (
-        "You are an expert visual assistant. Your task is to analyze an image and a complex question. "
-        "Based on the question, identify the object or entity that is performing the action described in the question. "
-        "If the question describes an action (e.g., 'who caresses the white cat at home?'), focus on the object or entity performing that action (e.g., 'hand'). "
-        "You must respond with ONLY the name of that single object or entity and nothing else. "
-        "For example, if the question is 'Who is holding the book?', and the image shows a hand holding a book, your response should be exactly 'hand'. "
-        "If the question is 'Who caresses the white cat at home?', and the image shows a hand caressing a white cat, your response should be exactly 'hand'."
-        )
-        
-        print("正在调用智谱AI API (glm-4v) 生成指代短语...")
+        print(f"正在上传视频文件: {video_path} ...")
         try:
+            # 步骤 1: 上传文件
+            with open(video_path, "rb") as video_file:
+                file_obj = self.client.files.create(file=video_file, purpose="vision")
+            
+            print(f"视频上传成功，文件ID: {file_obj.id}")
+
+            # 步骤 2: 构建指令 (Prompt)
+            phrase_prompt = (
+                "You are a computer vision assistant. Your task is to analyze the provided video and the user's question to create a concise English phrase that uniquely identifies the target object. "
+                "This phrase will be fed into a visual grounding model. It must be descriptive and include spatial relationships if necessary. "
+                "Do NOT just respond with a single word. Be specific.\n\n"
+                "Here are some examples of perfect responses:\n"
+                "Question: 'what is next to the other squirrel?' -> 'the squirrel on the left'\n"
+                "Question: 'what does the adult woman in black hold in the living room?' -> 'the book in her hands'\n"
+            )
+            
+            print("正在调用智谱AI API (glm-4v) 分析视频内容...")
+            
+            # 步骤 3: 发送带有文件ID的聊天请求
             response = self.client.chat.completions.create(
                 model="glm-4v",
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"{phrase_prompt}Now, create the phrase for this question and image.\nQuestion: '{complex_query}' ->"},
-                        {
-                            "type": "image_url",
-                            "image_url": { "url": f"data:image/jpeg;base64,{base64_image}" }
-                        }
+                        {"type": "text", "text": f"{phrase_prompt}Now, analyze this video.\nQuestion: '{complex_query}' ->"},
+                        {"type": "file_url", "file_url": {"url": file_obj.id}} # <--- 关键修改点
                     ]
                 }],
                 max_tokens=20,
@@ -73,10 +67,8 @@ class APIQueryRefiner:
             return refined_phrase
             
         except Exception as e:
-            print(f"调用智谱AI API 时发生错误: {e}")
+            print(f"调用智谱AI API 或上传文件时发生错误: {e}")
             return ""
-
-# main_llm.py 中从 main 函数开始的部分
 
 def main(args):
     """主执行函数"""
@@ -98,32 +90,19 @@ def main(args):
         print(f"错误: {e}")
         return
     
-    # --- 核心修改：计算并读取中间帧 ---
-    middle_frame_idx = start_frame + (end_frame - start_frame) // 2
-    print(f"选择第 {middle_frame_idx} 帧（中间帧）发送给大模型进行分析...")
-    
-    # 使用新函数直接读取中间帧
-    frame_for_api_np = read_single_frame(video_path, middle_frame_idx)
-    
-    if frame_for_api_np is None:
-        print("错误：无法读取用于分析的中间帧，程序终止。")
-        return
-        
-    frame_for_api_pil = Image.fromarray(frame_for_api_np)
-    # ------------------------------------
-    
-    refined_phrase = query_refiner.refine_query(frame_for_api_pil, complex_query)
+    # --- 核心修改：直接将视频路径传递给 refiner ---
+    # 我们不再需要手动提取第一帧给API
+    refined_phrase = query_refiner.refine_query(video_path, complex_query)
     
     if not refined_phrase:
         print("错误: API未能从查询中提炼出有效的指代短语。程序终止。")
         return
 
+    # --- 后续流程不变，仍然是对帧进行检测和追踪 ---
     print("\n--- 开始目标检测与追踪流程 ---")
     detector = Detector(model_path='yolov8l-world.pt')
     tracker = Tracker(tracker_type='CSRT')
-    print("YOLO模型初始化完成。")
 
-    # 注意：初始检测和追踪仍然从 start_frame 开始
     frame_generator = read_video_frames(video_path, start_frame, end_frame)
     try:
         first_frame_np = next(frame_generator)
@@ -131,15 +110,14 @@ def main(args):
         print("错误：视频帧区间为空或无法读取第一帧。")
         return
 
-    print(f"正在第一帧（第 {start_frame} 帧）使用短语 '{refined_phrase}' 进行初始目标检测...")
+    print(f"正在第一帧使用短语 '{refined_phrase}' 进行初始目标检测...")
     initial_bbox = detector.detect_object(first_frame_np, refined_phrase)
     all_bboxes = {}
     
     if initial_bbox:
         tracker.initialize(first_frame_np, initial_bbox)
         cx, cy, w, h = initial_bbox
-        x_min, y_min = cx - w // 2, cy - h // 2
-        x_max, y_max = x_min + w, y_min + h
+        x_min, y_min, x_max, y_max = cx - w // 2, cy - h // 2, cx + w, cy + h
         all_bboxes[str(start_frame)] = {"xmin": x_min, "ymin": y_min, "xmax": x_max, "ymax": y_max}
         print(f"目标已找到，边界框: {all_bboxes[str(start_frame)]}，开始追踪...")
     else:
@@ -148,30 +126,28 @@ def main(args):
 
     frame_count = end_frame - start_frame
     for i, frame in enumerate(tqdm(frame_generator, total=max(0, frame_count), desc="追踪进度")):
-        frame_idx = start_frame + i + 1
+        if i == 0 and frame_count > 0: continue # 跳过第一帧
+        frame_idx = start_frame + i
         success, new_bbox = tracker.update(frame)
         
         current_bbox_for_json = {} 
         if success:
             cx, cy, w, h = new_bbox
-            x_min, y_min = cx - w // 2, cy - h // 2
-            x_max, y_max = x_min + w, y_min + h
+            x_min, y_min, x_max, y_max = cx - w // 2, cy - h // 2, cx + w, y_min + h
             current_bbox_for_json = {"xmin": x_min, "ymin": y_min, "xmax": x_max, "ymax": y_max}
         else:
             redetected_bbox = detector.detect_object(frame, refined_phrase)
             if redetected_bbox:
                 tracker.initialize(frame, redetected_bbox)
                 cx, cy, w, h = redetected_bbox
-                x_min, y_min = cx - w // 2, cy - h // 2
-                x_max, y_max = x_min + w, y_min + h
+                x_min, y_min, x_max, y_max = cx - w // 2, cy - h // 2, cx + w, y_min + h
                 current_bbox_for_json = {"xmin": x_min, "ymin": y_min, "xmax": x_max, "ymax": y_max}
         
         all_bboxes[str(frame_idx)] = current_bbox_for_json
 
     video_key, _ = os.path.splitext(video_filename)
     match = re.search(r'(\d+)', video_key)
-    if match:
-        video_key = match.group(1)
+    if match: video_key = match.group(1)
 
     final_output = {
         video_key: {
@@ -183,14 +159,12 @@ def main(args):
     save_results_to_json(final_output, args.output_path)
     print(f"\n处理完成，结果已保存至 {args.output_path}")
 
-# __main__ 部分保持不变
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="集成智谱AI API的视频时空定位脚本")
-    # ... (命令行参数部分无需改动)
+    parser = argparse.ArgumentParser(description="集成智谱AI视频理解API的视频时空定位脚本")
     parser.add_argument('--video_path', type=str, required=True, help='输入视频文件的路径')
     parser.add_argument('--json_path', type=str, required=True, help='包含任务描述的JSON文件路径')
     parser.add_argument('--api_key', type=str, required=True, help='你的智谱AI API 密钥')
-    parser.add_argument('--output_path', type=str, default='output/results_zhipu_api.json', help='输出结果JSON文件的路径')
+    parser.add_argument('--output_path', type=str, default='output/result.json', help='输出结果JSON文件的路径')
     
     args = parser.parse_args()
     
