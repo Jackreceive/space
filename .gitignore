@@ -1,3 +1,4 @@
 output/
 output_batch/
 yolov8l-world.pt
+sample_videos/
