@@ -1,0 +1,8 @@
+# requirements.txt (API版本)
+google-generativeai
+Pillow
+opencv-python-headless
+torch
+ultralytics
+tqdm
+numpy
