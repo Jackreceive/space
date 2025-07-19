@@ -37,13 +37,15 @@ class APIQueryRefiner:
         base64_image = self._encode_image_to_base64(frame)
         
         phrase_prompt = (
-            "You are a visual grounding assistant. Your task is to respond to a question about an image by creating a concise descriptive phrase. "
-            "The subject of this phrase MUST be the direct answer to the question. "
-            "The phrase should include descriptive modifiers (like color or position) to uniquely identify the subject. "
-            "Do NOT write a full sentence, only the descriptive phrase itself.\n\n"
-            "Here are some examples of perfect responses:\n"
-            "Question: 'who holds hand of the other adult on stage?' -> 'the man in the blue suit'\n"
-            "Question: 'what is next to the other squirrel?' -> 'the squirrel on the grass'\n"
+            "You are a visual grounding assistant. "
+            "Given a question and an image, output **exactly one** concise noun phrase "
+            "that uniquely identifies the single subject to track. "
+            "- Do NOT include verbs, prepositions, or full sentences. "
+            "- Format must be '<color> <object>'. "
+            "- Return only that one phrase and nothing else.\n\n"
+            "Example:\n"
+            "Question: 'there is a dog biting a white cat beside the desk.'\n"
+            "=> 'the brown dog'\n\n"
         )
         
         print("正在调用智谱AI API (glm-4v) 生成指代短语...")
@@ -93,14 +95,12 @@ def main(args):
     except (ValueError, FileNotFoundError) as e:
         print(f"错误: {e}")
         return
+
     
-    middle_frame_idx = start_frame 
-    print(f"选择第 {middle_frame_idx} 帧（中间帧）发送给大模型进行分析...")
-    
-    frame_for_api_np = read_single_frame(video_path, middle_frame_idx)
+    frame_for_api_np = read_single_frame(video_path, start_frame)
     
     if frame_for_api_np is None:
-        print("错误：无法读取用于分析的中间帧，程序终止。")
+        print("错误：无法读取用于分析的start帧，程序终止。")
         return
         
     frame_for_api_pil = Image.fromarray(frame_for_api_np)

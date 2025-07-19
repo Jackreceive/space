@@ -29,7 +29,7 @@ class Detector:
         使用 Grounding DINO 检测与文本短语匹配的物体。
         """
         # print(text_prompt)
-        text_prompt=" a red thing"
+        text_prompt=" a red ukulele"
         if not isinstance(text_prompt, str) or not text_prompt:
             print(f"警告: 传入了无效的文本提示 '{text_prompt}'，跳过检测。")
             return None
@@ -43,8 +43,8 @@ class Detector:
         results = self.processor.post_process_grounded_object_detection(
             outputs,
             inputs.input_ids,
-            box_threshold=0.1,
-            text_threshold=0.1,
+            box_threshold=0.3,
+            text_threshold=0.3,
             target_sizes=[image_pil.size[::-1]]
         )[0] # 取出第一张（也是唯一一张）图片的结果
         
