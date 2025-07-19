@@ -1,0 +1,10 @@
+# requirements.txt
+torch
+torchvision
+transformers
+accelerate
+opencv-contrib-python
+supervision
+Pillow
+tqdm
+numpy
